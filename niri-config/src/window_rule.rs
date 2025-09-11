@@ -6,7 +6,7 @@ use crate::appearance::{
 };
 use crate::layout::DefaultPresetSize;
 use crate::utils::{MergeWith, RegexEq};
-use crate::FloatOrInt;
+use crate::{FloatOrInt, InhibitIdle};
 
 #[derive(knuffel::Decode, Debug, Default, Clone, PartialEq)]
 pub struct WindowRule {
@@ -75,6 +75,8 @@ pub struct WindowRule {
     pub scroll_factor: Option<FloatOrInt<0, 100>>,
     #[knuffel(child, unwrap(argument))]
     pub tiled_state: Option<bool>,
+    #[knuffel(child, unwrap(argument))]
+    pub inhibit_idle: Option<Option<InhibitIdle>>,
     #[knuffel(child, default)]
     pub background_effect: BackgroundEffectRule,
     #[knuffel(child, default)]
