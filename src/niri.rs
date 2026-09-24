@@ -187,8 +187,8 @@ use crate::utils::watcher::Watcher;
 use crate::utils::xwayland::satellite::Satellite;
 use crate::utils::{
     center, center_f64, expand_home, get_monotonic_time, ipc_transform_to_smithay, is_mapped,
-    logical_output, make_screenshot_path, output_matches_name, output_size, panel_orientation,
-    send_scale_transform, winit_scale, write_png_rgba8, xwayland,
+    logical_output, make_screenshot_path, output_gravities, output_matches_name, output_size,
+    panel_orientation, send_scale_transform, winit_scale, write_png_rgba8, xwayland,
 };
 use crate::window::mapped::MappedId;
 use crate::window::{InitialConfigureState, Mapped, ResolvedWindowRules, Unmapped, WindowRef};
@@ -2073,7 +2073,13 @@ impl State {
                 .global_space
                 .outputs()
                 .find(|output| output.name() == ipc_output.name)
-                .map(logical_output);
+                .map(|output| {
+                    let mut logical = logical_output(output);
+                    if let Some(mon) = self.niri.layout.monitor_for_output(output) {
+                        logical.gravity = mon.output_gravity().to_ipc();
+                    }
+                    logical
+                });
             ipc_output.logical = logical;
         }
 
@@ -2952,6 +2958,31 @@ impl Niri {
                 self.queue_redraw(&output);
             }
         }
+
+        self.refresh_output_gravity();
+    }
+
+    /// Recomputes each mapped output's position relative to the center of all outputs, and
+    /// pushes it into the layout.
+    ///
+    /// Must be called after any change to the set or arrangement of mapped outputs (including
+    /// size, since that shifts the bounding box), i.e. from [`Self::reposition_outputs`] and
+    /// [`Self::output_resized`].
+    fn refresh_output_gravity(&mut self) {
+        let geometries: Vec<_> = self
+            .global_space
+            .outputs()
+            .map(|output| {
+                let geo = self.global_space.output_geometry(output).unwrap();
+                (output.clone(), geo)
+            })
+            .collect();
+
+        for (output, gravity) in output_gravities(&geometries) {
+            if self.layout.update_output_gravity(&output, gravity) {
+                self.queue_redraw(&output);
+            }
+        }
     }
 
     pub fn add_output(&mut self, output: Output, refresh_interval: Option<Duration>, vrr: bool) {
@@ -3146,6 +3177,10 @@ impl Niri {
         }
 
         self.layout.update_output_size(output);
+
+        // The output's size feeds into the layout bounding box that output gravity is computed
+        // from, so a resize can shift every output's gravity, not just this one's.
+        self.refresh_output_gravity();
 
         if let Some(state) = self.output_state.get_mut(output) {
             state.backdrop_buffer.resize(output_size);

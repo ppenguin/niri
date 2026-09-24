@@ -142,6 +142,35 @@ layout {
 }
 ```
 
+### `column-anchor`
+
+<sup>Since: 26.05</sup>
+
+Which edge new columns are anchored to, i.e. where the first column on a workspace appears and which
+direction subsequent columns are added in. This can be set to:
+
+- `"left"`: the first column is left-aligned, new columns appear to its right. This is the default.
+- `"right"`: the first column is right-aligned, new columns appear to its left.
+- `"toward-center"`: anchored to whichever edge of the monitor faces the center of the whole monitor
+  layout. On a single monitor, or a monitor centered in the layout, this behaves like `"right"`.
+- `"away-from-center"`: the mirror of `"toward-center"`. On a single monitor, or a monitor centered in
+  the layout, this behaves like `"left"`.
+
+`"toward-center"` and `"away-from-center"` are meant for multi-monitor setups: with two monitors side
+by side, `"toward-center"` makes new columns grow from the seam between the monitors outward, so
+windows open next to each other rather than at the outer edges of the screen. With an odd number of
+monitors in a row, the middle one has no side of the center, so it falls back to the single-monitor
+behavior above.
+
+`center-focused-column "always"` and `always-center-single-column` take precedence over
+`column-anchor` whenever they apply.
+
+```kdl
+layout {
+    column-anchor "toward-center"
+}
+```
+
 ### `empty-workspace-above-first`
 
 <sup>Since: 25.01</sup>

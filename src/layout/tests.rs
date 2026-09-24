@@ -3,8 +3,8 @@ use std::cell::{Cell, OnceCell, RefCell};
 use niri_config::utils::Flag;
 use niri_config::workspace::WorkspaceName;
 use niri_config::{
-    CenterFocusedColumn, FloatOrInt, OutputName, Struts, TabIndicatorLength, TabIndicatorPosition,
-    WorkspaceReference,
+    CenterFocusedColumn, ColumnAnchor, FloatOrInt, OutputName, Struts, TabIndicatorLength,
+    TabIndicatorPosition, WorkspaceReference,
 };
 use proptest::prelude::*;
 use proptest_derive::Arbitrary;
@@ -3920,6 +3920,15 @@ fn arbitrary_center_focused_column() -> impl Strategy<Value = CenterFocusedColum
     ]
 }
 
+fn arbitrary_column_anchor() -> impl Strategy<Value = ColumnAnchor> {
+    prop_oneof![
+        Just(ColumnAnchor::Left),
+        Just(ColumnAnchor::Right),
+        Just(ColumnAnchor::TowardCenter),
+        Just(ColumnAnchor::AwayFromCenter),
+    ]
+}
+
 fn arbitrary_tab_indicator_position() -> impl Strategy<Value = TabIndicatorPosition> {
     prop_oneof![
         Just(TabIndicatorPosition::Left),
@@ -4006,6 +4015,7 @@ prop_compose! {
         tab_indicator in prop::option::of(arbitrary_tab_indicator()),
         center_focused_column in prop::option::of(arbitrary_center_focused_column()),
         always_center_single_column in prop::option::of(any::<bool>().prop_map(Flag)),
+        column_anchor in prop::option::of(arbitrary_column_anchor()),
         empty_workspace_above_first in prop::option::of(any::<bool>().prop_map(Flag)),
     ) -> niri_config::LayoutPart {
         niri_config::LayoutPart {
@@ -4013,6 +4023,7 @@ prop_compose! {
             struts,
             center_focused_column,
             always_center_single_column,
+            column_anchor,
             empty_workspace_above_first,
             focus_ring,
             border,

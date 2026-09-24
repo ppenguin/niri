@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use niri_config::utils::MergeWith as _;
-use niri_config::{CenterFocusedColumn, PresetSize, Struts};
+use niri_config::{CenterFocusedColumn, ColumnAnchor, PresetSize, Struts};
 use niri_ipc::{ColumnDisplay, SizeChange, WindowLayout};
 use ordered_float::NotNan;
 use smithay::backend::renderer::gles::GlesRenderer;
@@ -58,12 +58,16 @@ pub struct ScrollingSpace<W: LayoutElement> {
     /// When a new column is created and removed with no focus changes in-between, it is more
     /// natural to activate the previously-focused column. This variable tracks that.
     ///
-    /// Since we only create-and-activate columns immediately to the right of the active column (in
-    /// contrast to tabs in Firefox, for example), we can track this as a bool, rather than an
-    /// index of the previous column to activate.
+    /// We only ever create-and-activate columns immediately adjacent to the active column (in
+    /// contrast to tabs in Firefox, for example), so we can track this as a single side, rather
+    /// than an index of the previous column to activate. The side isn't always to the left: with
+    /// a right-facing `column-anchor`, new columns are created to the left of the active one, so
+    /// the previous column ends up on the right instead.
     ///
-    /// The value is the view offset that the previous column had before, to restore it.
-    activate_prev_column_on_removal: Option<f64>,
+    /// The first value is whether the previous column is to the left (`true`) or right (`false`)
+    /// of the column being activated. The second is the view offset that the previous column had
+    /// before, to restore it.
+    activate_prev_column_on_removal: Option<(bool, f64)>,
 
     /// View offset to restore after unfullscreening or unmaximizing.
     view_offset_to_restore: Option<f64>,
@@ -577,6 +581,23 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             || (self.options.layout.always_center_single_column && self.columns.len() <= 1)
     }
 
+    /// Whether columns are anchored to the right edge of the working area (so new columns grow
+    /// leftward), rather than the default left edge.
+    ///
+    /// By the time this is read, `column-anchor` has already been resolved down to `Left`/
+    /// `Right` for this output (monitor gravity is not known here), so this is the only place
+    /// that needs to know about the anchor at all.
+    fn is_right_anchored(&self) -> bool {
+        match self.options.layout.column_anchor {
+            ColumnAnchor::Right => true,
+            ColumnAnchor::Left => false,
+            ColumnAnchor::TowardCenter | ColumnAnchor::AwayFromCenter => {
+                error!("column-anchor should have been resolved to Left/Right by this point");
+                false
+            }
+        }
+    }
+
     fn compute_new_view_offset_fit(
         &self,
         target_x: Option<f64>,
@@ -628,6 +649,37 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         -(area.size.w - width) / 2. - area.loc.x
     }
 
+    /// Like [`Self::compute_new_view_offset_centered`], but right-aligns the column instead of
+    /// centering it.
+    ///
+    /// Only used to place the first column of an otherwise-empty workspace under a right-facing
+    /// `column-anchor`; every subsequent view movement goes through the ordinary fit/centered
+    /// logic above, which is already edge-agnostic.
+    fn compute_new_view_offset_end(
+        &self,
+        target_x: Option<f64>,
+        col_x: f64,
+        width: f64,
+        mode: SizingMode,
+    ) -> f64 {
+        if mode.is_fullscreen() {
+            return self.compute_new_view_offset_fit(target_x, col_x, width, mode);
+        }
+
+        let area = if mode.is_maximized() {
+            self.parent_area
+        } else {
+            self.working_area
+        };
+
+        // Columns wider than the view are left-aligned (the fit code can deal with that).
+        if area.size.w <= width {
+            return self.compute_new_view_offset_fit(target_x, col_x, width, mode);
+        }
+
+        -(area.size.w - width) - area.loc.x
+    }
+
     fn compute_new_view_offset_for_column_fit(&self, target_x: Option<f64>, idx: usize) -> f64 {
         let col = &self.columns[idx];
         self.compute_new_view_offset_fit(
@@ -645,6 +697,16 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     ) -> f64 {
         let col = &self.columns[idx];
         self.compute_new_view_offset_centered(
+            target_x,
+            self.column_x(idx),
+            col.width(),
+            col.sizing_mode(),
+        )
+    }
+
+    fn compute_new_view_offset_for_column_end(&self, target_x: Option<f64>, idx: usize) -> f64 {
+        let col = &self.columns[idx];
+        self.compute_new_view_offset_end(
             target_x,
             self.column_x(idx),
             col.width(),
@@ -1008,6 +1070,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let idx = idx.unwrap_or_else(|| {
             if was_empty {
                 0
+            } else if self.is_right_anchored() {
+                self.active_column_idx
             } else {
                 self.active_column_idx + 1
             }
@@ -1045,12 +1109,30 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             // view_offset was left over and skip the animation.
             if was_empty {
                 self.view_offset = ViewOffset::Static(0.);
-                self.view_offset =
-                    ViewOffset::Static(self.compute_new_view_offset_for_column(None, idx, None));
+                // A right-facing column-anchor only affects this initial placement: once there
+                // is more than one column, the fit/centered logic above is already edge-agnostic
+                // and naturally keeps hugging whichever edge the column started against.
+                let new_offset = if !self.is_centering_focused_column() && self.is_right_anchored()
+                {
+                    self.compute_new_view_offset_for_column_end(None, idx)
+                } else {
+                    self.compute_new_view_offset_for_column(None, idx, None)
+                };
+                self.view_offset = ViewOffset::Static(new_offset);
             }
 
-            let prev_offset = (!was_empty && idx == self.active_column_idx + 1)
-                .then(|| self.view_offset.stationary());
+            // If the new column landed immediately next to the previously active one, remember
+            // how to get back to it if the new column is closed with no other focus changes
+            // in-between. Which side "next to" means depends on the grow direction: normally
+            // the new column lands to the right of the previous one, but under a right-facing
+            // `column-anchor` it lands to the left instead.
+            let prev_offset = if !was_empty && idx == self.active_column_idx + 1 {
+                Some((true, self.view_offset.stationary()))
+            } else if !was_empty && idx + 1 == self.active_column_idx {
+                Some((false, self.view_offset.stationary()))
+            } else {
+                None
+            };
 
             let anim_config =
                 anim_config.unwrap_or(self.options.animations.horizontal_view_movement.0);
@@ -1221,10 +1303,18 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             }
         }
 
-        if column_idx + 1 == self.active_column_idx {
-            // The previous column, that we were going to activate upon removal of the active
-            // column, has just been itself removed.
-            self.activate_prev_column_on_removal = None;
+        if let Some((prev_is_left, _)) = self.activate_prev_column_on_removal {
+            let removed_was_prev = if prev_is_left {
+                column_idx + 1 == self.active_column_idx
+            } else {
+                column_idx == self.active_column_idx + 1
+            };
+
+            if removed_was_prev {
+                // The previous column, that we were going to activate upon removal of the
+                // active column, has just been itself removed.
+                self.activate_prev_column_on_removal = None;
+            }
         }
 
         if column_idx == self.active_column_idx {
@@ -1246,10 +1336,16 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             && self.activate_prev_column_on_removal.is_some()
         {
             // The active column was removed, and we needed to activate the previous column.
-            if 0 < column_idx {
-                let prev_offset = self.activate_prev_column_on_removal.unwrap();
+            let (prev_is_left, prev_offset) = self.activate_prev_column_on_removal.unwrap();
+            let prev_idx = if prev_is_left {
+                self.active_column_idx.checked_sub(1)
+            } else {
+                let idx = self.active_column_idx;
+                (idx < self.columns.len()).then_some(idx)
+            };
 
-                self.activate_column_with_anim_config(self.active_column_idx - 1, view_config);
+            if let Some(prev_idx) = prev_idx {
+                self.activate_column_with_anim_config(prev_idx, view_config);
 
                 // Restore the view offset but make sure to scroll the view in case the
                 // previous window had resized.
@@ -1847,7 +1943,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 // improves the workflow that has become common with tabbed columns: open a new
                 // window, then immediately consume it left as a new tab.
                 self.activate_prev_column_on_removal
-                    .get_or_insert(self.view_offset.stationary() + offset.x);
+                    .get_or_insert((true, self.view_offset.stationary() + offset.x));
             }
 
             offset += self.columns[source_col_idx].render_offset();

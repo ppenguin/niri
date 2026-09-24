@@ -1268,6 +1268,28 @@ pub struct LogicalOutput {
     pub scale: f64,
     /// Transform.
     pub transform: Transform,
+    /// This output's position within the layout of all connected outputs, relative to that
+    /// layout's center.
+    pub gravity: OutputGravity,
+}
+
+/// An output's position within the layout of all connected outputs, relative to that layout's
+/// center.
+///
+/// For polar form, `dx.hypot(dy)` is the distance from the layout's center (as a fraction of
+/// the layout's half-extent along that direction), and `dy.atan2(dx)` is the angle from the
+/// layout's center, in radians, counter-clockwise from the positive x axis.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub struct OutputGravity {
+    /// Horizontal offset of the output's center from the layout's center, normalized to the
+    /// layout's half-width.
+    ///
+    /// Ranges over -1.0..=1.0. `0.0` for a single output, or one exactly centered in the layout.
+    pub dx: f64,
+    /// Vertical offset of the output's center from the layout's center, normalized to the
+    /// layout's half-height. Same range and center convention as `dx`.
+    pub dy: f64,
 }
 
 /// Output transform, which goes counter-clockwise.

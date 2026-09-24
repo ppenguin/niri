@@ -663,10 +663,12 @@ fn print_output(output: Output) -> anyhow::Result<()> {
             height,
             scale,
             transform,
+            gravity,
         } = logical;
         println!("  Logical position: {x}, {y}");
         println!("  Logical size: {width}x{height}");
         println!("  Scale: {scale}");
+        println!("  Gravity: dx={:.2}, dy={:.2}", gravity.dx, gravity.dy);
 
         let transform = match transform {
             Transform::Normal => "normal",

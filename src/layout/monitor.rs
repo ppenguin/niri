@@ -3,7 +3,7 @@ use std::iter::zip;
 use std::rc::Rc;
 use std::time::Duration;
 
-use niri_config::{CornerRadius, LayoutPart};
+use niri_config::{ColumnAnchor, CornerRadius, LayoutPart};
 use smithay::backend::renderer::element::utils::{
     CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement,
 };
@@ -30,7 +30,8 @@ use crate::render_helpers::RenderCtx;
 use crate::rubber_band::RubberBand;
 use crate::utils::transaction::Transaction;
 use crate::utils::{
-    output_size, round_logical_in_physical, round_logical_in_physical_max1, ResizeEdge,
+    output_size, round_logical_in_physical, round_logical_in_physical_max1, OutputGravity,
+    ResizeEdge,
 };
 
 /// Amount of touchpad movement to scroll the height of one workspace.
@@ -89,6 +90,8 @@ pub struct Monitor<W: LayoutElement> {
     pub(super) options: Rc<Options>,
     /// Layout config overrides for this monitor.
     layout_config: Option<niri_config::LayoutPart>,
+    /// This output's position relative to the center of all connected outputs.
+    output_gravity: OutputGravity,
 }
 
 #[derive(Debug)]
@@ -289,6 +292,41 @@ impl From<&super::OverviewProgress> for OverviewProgress {
     }
 }
 
+/// Resolves a `column-anchor` against this output's gravity.
+///
+/// The `"toward-center"`/`"away-from-center"` values are relative to the whole output layout, so
+/// they are resolved down to a concrete `Left`/`Right` here, at the point where the output's
+/// position becomes known.
+fn resolve_column_anchor(anchor: ColumnAnchor, gravity: OutputGravity) -> ColumnAnchor {
+    match anchor {
+        ColumnAnchor::Left | ColumnAnchor::Right => anchor,
+        ColumnAnchor::TowardCenter => {
+            if gravity.is_left_of_center() {
+                ColumnAnchor::Right
+            } else {
+                ColumnAnchor::Left
+            }
+        }
+        ColumnAnchor::AwayFromCenter => {
+            if gravity.is_left_of_center() {
+                ColumnAnchor::Left
+            } else {
+                ColumnAnchor::Right
+            }
+        }
+    }
+}
+
+fn build_options(
+    base_options: &Options,
+    layout_config: Option<&LayoutPart>,
+    gravity: OutputGravity,
+) -> Options {
+    let mut options = Options::clone(base_options).with_merged_layout(layout_config);
+    options.layout.column_anchor = resolve_column_anchor(options.layout.column_anchor, gravity);
+    options
+}
+
 impl<W: LayoutElement> Monitor<W> {
     pub fn new(
         output: Output,
@@ -298,8 +336,15 @@ impl<W: LayoutElement> Monitor<W> {
         base_options: Rc<Options>,
         layout_config: Option<LayoutPart>,
     ) -> Self {
-        let options =
-            Rc::new(Options::clone(&base_options).with_merged_layout(layout_config.as_ref()));
+        // The output isn't positioned in the global output layout yet at this point, so its
+        // gravity is not yet known; it will be corrected by an `update_output_gravity()` call
+        // once the output is placed.
+        let output_gravity = OutputGravity::default();
+        let options = Rc::new(build_options(
+            &base_options,
+            layout_config.as_ref(),
+            output_gravity,
+        ));
 
         let scale = output.current_scale();
         let view_size = output_size(&output);
@@ -347,6 +392,7 @@ impl<W: LayoutElement> Monitor<W> {
             base_options,
             options,
             layout_config,
+            output_gravity,
         }
     }
 
@@ -1185,8 +1231,11 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     pub fn update_config(&mut self, base_options: Rc<Options>) {
-        let options =
-            Rc::new(Options::clone(&base_options).with_merged_layout(self.layout_config.as_ref()));
+        let options = Rc::new(build_options(
+            &base_options,
+            self.layout_config.as_ref(),
+            self.output_gravity,
+        ));
 
         if self.options.layout.empty_workspace_above_first
             != options.layout.empty_workspace_above_first
@@ -1217,6 +1266,17 @@ impl<W: LayoutElement> Monitor<W> {
         }
 
         self.layout_config = layout_config;
+        self.update_config(self.base_options.clone());
+
+        true
+    }
+
+    pub fn update_output_gravity(&mut self, gravity: OutputGravity) -> bool {
+        if self.output_gravity == gravity {
+            return false;
+        }
+
+        self.output_gravity = gravity;
         self.update_config(self.base_options.clone());
 
         true
@@ -2118,12 +2178,19 @@ impl<W: LayoutElement> Monitor<W> {
         self.layout_config.as_ref()
     }
 
+    pub fn output_gravity(&self) -> OutputGravity {
+        self.output_gravity
+    }
+
     #[cfg(test)]
     pub(super) fn verify_invariants(&self) {
         use approx::assert_abs_diff_eq;
 
-        let options =
-            Options::clone(&self.base_options).with_merged_layout(self.layout_config.as_ref());
+        let options = build_options(
+            &self.base_options,
+            self.layout_config.as_ref(),
+            self.output_gravity,
+        );
         assert_eq!(&*self.options, &options);
 
         assert!(

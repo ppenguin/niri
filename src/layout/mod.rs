@@ -71,7 +71,7 @@ use crate::rubber_band::RubberBand;
 use crate::utils::transaction::{Transaction, TransactionBlocker};
 use crate::utils::{
     ensure_min_max_size_maybe_zero, output_matches_name, output_size,
-    round_logical_in_physical_max1, ResizeEdge,
+    round_logical_in_physical_max1, OutputGravity, ResizeEdge,
 };
 use crate::window::ResolvedWindowRules;
 
@@ -1495,6 +1495,20 @@ impl<W: LayoutElement> Layout<W> {
         };
 
         mon.update_output_size();
+    }
+
+    /// Updates an output's position relative to the center of all connected outputs.
+    ///
+    /// Returns `true` if the gravity changed (and thus the output's effective config may have
+    /// changed, e.g. a `column-anchor` resolution).
+    pub fn update_output_gravity(&mut self, output: &Output, gravity: OutputGravity) -> bool {
+        let _span = tracy_client::span!("Layout::update_output_gravity");
+
+        let Some(mon) = self.monitor_for_output_mut(output) else {
+            return false;
+        };
+
+        mon.update_output_gravity(gravity)
     }
 
     pub fn scroll_amount_to_activate(&self, window: &W::Id) -> f64 {

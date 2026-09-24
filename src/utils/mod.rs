@@ -226,7 +226,96 @@ pub fn logical_output(output: &Output) -> niri_ipc::LogicalOutput {
         height: size.h as u32,
         scale: output.current_scale().fractional_scale(),
         transform,
+        // Filled in separately by the caller, which has access to the output's Monitor.
+        gravity: niri_ipc::OutputGravity::default(),
     }
+}
+
+/// An output's position within the layout of all connected outputs, relative to that layout's
+/// center.
+///
+/// `dx` and `dy` are the output's center offset from the layout's bounding-box center,
+/// normalized to the layout's half-width and half-height respectively, so they range over
+/// `-1.0..=1.0`. A single output, or one exactly centered in the layout, has `dx == dy == 0.`.
+///
+/// Only the sign of `dx` is currently consumed, by `layout.column-anchor`'s `"toward-center"`
+/// and `"away-from-center"` values. The rest is exposed (including over IPC) for future
+/// position-aware layout logic.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct OutputGravity {
+    pub dx: f64,
+    pub dy: f64,
+}
+
+impl OutputGravity {
+    /// Whether the output's center is at or left/above of the layout's center.
+    ///
+    /// This is also the tie-break for an output exactly at the center (`dx == 0.`).
+    pub fn is_left_of_center(self) -> bool {
+        self.dx <= 0.
+    }
+
+    /// Distance from the layout center, as a fraction of the layout's half-extent along the
+    /// same direction.
+    pub fn radius(self) -> f64 {
+        self.dx.hypot(self.dy)
+    }
+
+    /// Angle from the layout center, in radians, counter-clockwise from the positive x axis.
+    pub fn angle(self) -> f64 {
+        self.dy.atan2(self.dx)
+    }
+
+    pub fn to_ipc(self) -> niri_ipc::OutputGravity {
+        niri_ipc::OutputGravity {
+            dx: self.dx,
+            dy: self.dy,
+        }
+    }
+}
+
+/// Computes each output's [`OutputGravity`] relative to the bounding box of all given output
+/// geometries.
+pub fn output_gravities(
+    geometries: &[(Output, Rectangle<i32, Logical>)],
+) -> Vec<(Output, OutputGravity)> {
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+
+    for (_, geo) in geometries {
+        min_x = min_x.min(geo.loc.x as f64);
+        min_y = min_y.min(geo.loc.y as f64);
+        max_x = max_x.max((geo.loc.x + geo.size.w) as f64);
+        max_y = max_y.max((geo.loc.y + geo.size.h) as f64);
+    }
+
+    let center_x = (min_x + max_x) / 2.;
+    let center_y = (min_y + max_y) / 2.;
+    let half_w = (max_x - min_x) / 2.;
+    let half_h = (max_y - min_y) / 2.;
+
+    geometries
+        .iter()
+        .map(|(output, geo)| {
+            let mon_center_x = geo.loc.x as f64 + geo.size.w as f64 / 2.;
+            let mon_center_y = geo.loc.y as f64 + geo.size.h as f64 / 2.;
+
+            let dx = if half_w > 0. {
+                (mon_center_x - center_x) / half_w
+            } else {
+                0.
+            };
+            let dy = if half_h > 0. {
+                (mon_center_y - center_y) / half_h
+            } else {
+                0.
+            };
+
+            (output.clone(), OutputGravity { dx, dy })
+        })
+        .collect()
 }
 
 pub struct PanelOrientation(pub Transform);
@@ -641,5 +730,79 @@ mod tests {
         check((0, 0, 10, 20), (20, 30, 40, 5), (0, 15));
         check((0, 0, 10, 20), (20, 30, 4, 50), (6, 0));
         check((0, 0, 10, 20), (20, 30, 40, 50), (0, 0));
+    }
+
+    fn fake_output(name: &str) -> Output {
+        use smithay::output::{PhysicalProperties, Subpixel};
+
+        Output::new(
+            name.to_owned(),
+            PhysicalProperties {
+                size: Size::from((0, 0)),
+                subpixel: Subpixel::Unknown,
+                make: String::new(),
+                model: String::new(),
+                serial_number: String::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn output_gravity_single_output_is_centered() {
+        let output = fake_output("a");
+        let geo = Rectangle::new(Point::from((1280, 0)), Size::from((1920, 1080)));
+
+        let gravities = output_gravities(&[(output, geo)]);
+        assert_eq!(gravities.len(), 1);
+        assert_eq!(gravities[0].1, OutputGravity { dx: 0., dy: 0. });
+        assert!(gravities[0].1.is_left_of_center());
+    }
+
+    #[test]
+    fn output_gravity_two_outputs_side_by_side() {
+        let left = fake_output("left");
+        let right = fake_output("right");
+        let left_geo = Rectangle::new(Point::from((0, 0)), Size::from((1920, 1080)));
+        let right_geo = Rectangle::new(Point::from((1920, 0)), Size::from((1920, 1080)));
+
+        let gravities = output_gravities(&[(left, left_geo), (right, right_geo)]);
+
+        let (_, left_gravity) = gravities.iter().find(|(o, _)| o.name() == "left").unwrap();
+        let (_, right_gravity) = gravities.iter().find(|(o, _)| o.name() == "right").unwrap();
+
+        // Each output's own center sits halfway to the field's edge from the field's center.
+        assert_eq!(left_gravity.dx, -0.5);
+        assert!(left_gravity.is_left_of_center());
+        assert_eq!(right_gravity.dx, 0.5);
+        assert!(!right_gravity.is_left_of_center());
+    }
+
+    #[test]
+    fn output_gravity_three_outputs_middle_is_left_of_center() {
+        let outputs = [
+            (
+                fake_output("left"),
+                Rectangle::new(Point::from((0, 0)), Size::from((1920, 1080))),
+            ),
+            (
+                fake_output("middle"),
+                Rectangle::new(Point::from((1920, 0)), Size::from((1920, 1080))),
+            ),
+            (
+                fake_output("right"),
+                Rectangle::new(Point::from((3840, 0)), Size::from((1920, 1080))),
+            ),
+        ];
+
+        let gravities = output_gravities(&outputs);
+
+        let (_, middle_gravity) = gravities
+            .iter()
+            .find(|(o, _)| o.name() == "middle")
+            .unwrap();
+
+        // Exactly centered outputs are, by convention, considered left-of-center.
+        assert_eq!(middle_gravity.dx, 0.);
+        assert!(middle_gravity.is_left_of_center());
     }
 }

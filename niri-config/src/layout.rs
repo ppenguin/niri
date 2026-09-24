@@ -19,6 +19,7 @@ pub struct Layout {
     pub preset_window_heights: Vec<PresetSize>,
     pub center_focused_column: CenterFocusedColumn,
     pub always_center_single_column: bool,
+    pub column_anchor: ColumnAnchor,
     pub empty_workspace_above_first: bool,
     pub default_column_display: ColumnDisplay,
     pub gaps: f64,
@@ -42,6 +43,7 @@ impl Default for Layout {
             default_column_width: Some(PresetSize::Proportion(0.5)),
             center_focused_column: CenterFocusedColumn::Never,
             always_center_single_column: false,
+            column_anchor: ColumnAnchor::Left,
             empty_workspace_above_first: false,
             default_column_display: ColumnDisplay::Normal,
             gaps: 16.,
@@ -75,6 +77,7 @@ impl MergeWith<LayoutPart> for Layout {
             preset_column_widths,
             preset_window_heights,
             center_focused_column,
+            column_anchor,
             default_column_display,
             struts,
             background_color,
@@ -116,6 +119,8 @@ pub struct LayoutPart {
     pub center_focused_column: Option<CenterFocusedColumn>,
     #[knuffel(child)]
     pub always_center_single_column: Option<Flag>,
+    #[knuffel(child, unwrap(argument))]
+    pub column_anchor: Option<ColumnAnchor>,
     #[knuffel(child)]
     pub empty_workspace_above_first: Option<Flag>,
     #[knuffel(child, unwrap(argument, str))]
@@ -168,6 +173,24 @@ pub enum CenterFocusedColumn {
     /// Focusing a column will center it if it doesn't fit on the screen together with the
     /// previously focused column.
     OnOverflow,
+}
+
+#[derive(knuffel::DecodeScalar, Debug, Default, PartialEq, Eq, Clone, Copy)]
+pub enum ColumnAnchor {
+    /// New columns appear to the right of the previous one; the first column is left-aligned.
+    #[default]
+    Left,
+    /// New columns appear to the left of the previous one; the first column is right-aligned.
+    Right,
+    /// Aligned to whichever edge of the monitor faces the center of the monitor layout.
+    ///
+    /// On a single monitor, or one centered in the layout, this behaves like `"right"`.
+    TowardCenter,
+    /// Aligned to whichever edge of the monitor faces away from the center of the monitor
+    /// layout.
+    ///
+    /// On a single monitor, or one centered in the layout, this behaves like `"left"`.
+    AwayFromCenter,
 }
 
 impl<S> knuffel::Decode<S> for DefaultPresetSize
